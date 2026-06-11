@@ -158,46 +158,53 @@ def scrape_pronostico(url):
         print(f"Errore scraping {url}: {e}")
         return None
 
-def genera_post_telegram(pronostici, now_it):
-    """Usa Gemini per creare un post Telegram con tutti i pronostici."""
+def genera_messaggio_partita(p, now_it):
+    """Gemini genera l'analisi per UNA singola partita."""
+    q1 = f"@{p['odds_1']}" if p['odds_1'] != "N/D" else ""
+    prompt = f"""Sei un analista calcistico professionista italiano per il canale Telegram SuperPronostico.
 
-    pronostici_testo = ""
-    for p in pronostici:
-        pronostici_testo += f"--- {p['home']} vs {p['away']} ({p['competizione']}) ore {p['orario']} ---\n"
-        pronostici_testo += f"Pronostico degli esperti: {p['pronostico_tip']}\n"
-        if p['analisi']:
-            pronostici_testo += f"Analisi: {p['analisi'][:300]}\n"
-        pronostici_testo += f"Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}\n\n"
+Partita: {p['home']} vs {p['away']} | {p['competizione']} | ore {p['orario']}
+Pronostico esperti: {p['pronostico_tip']}
+Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}
+Analisi disponibile: {p['analisi'][:400] if p['analisi'] else 'N/D'}
 
-    prompt = f"""Sei un analista calcistico professionista italiano che scrive per il canale Telegram @SuperPronostico.
-Oggi e {now_it.strftime('%A %d %B %Y')}.
+Scrivi UN messaggio Telegram per questa partita:
+- Prima riga: *{p['home']} vs {p['away']}* ore {p['orario']} — _{p['competizione']}_
+- 3-4 righe di analisi professionale e coinvolgente
+- *🎯 Pronostico: [{p['pronostico_tip']}]* con quota se disponibile
+- Riga quote: 1={p['odds_1']} ❌ X={p['odds_x']} ❌ 2={p['odds_2']}
 
-Hai raccolto questi pronostici da esperti per le partite di oggi:
-
-{pronostici_testo}
-
-Scrivi un post Telegram professionale e coinvolgente che:
-1. Inizia con un'intestazione accattivante (es: "🔥 LE ANALISI DI OGGI — [DATA]")
-2. Per ogni partita scrive:
-   - *Home vs Away* ore [orario] — _competizione_
-   - 2-3 righe di analisi vivace e professionale basata sui dati forniti
-   - *🎯 Pronostico: [il pronostico degli esperti]* con quota
-   - Quote: 1=[X] X=[X] 2=[X]
-   - ——————
-3. Chiude con un invito a seguire il canale e disclaimer
-
-REGOLE FORMATO TELEGRAM:
-- *grassetto* con asterischi
-- _corsivo_ con underscore
-- Emoji vivaci ⚽🔥📊🎯💡
-- Max 3800 caratteri totali
-- Solo italiano
-- Solo il testo del post, nient'altro"""
-
-    print("Gemini sta generando il post...")
+Regole: *grassetto*, _corsivo_, emoji, max 600 caratteri, solo italiano, solo il testo."""
     return chiedi_gemini(prompt)
 
-def pubblica_telegram(testo):
+def genera_post_telegram(pronostici, now_it):
+    """Genera lista di messaggi: intestazione + uno per partita + chiusura."""
+    messaggi = []
+
+    # Messaggio 1: intestazione
+    data_it = now_it.strftime('%A %d %B %Y').capitalize()
+    intestazione = f"🔥 *LE ANALISI DI OGGI — {data_it}* 🔥\n\n⚽ {len(pronostici)} partite analizzate dai nostri esperti\n📊 Pronostici, quote e consigli per ogni match\n\nSeguici per non perdere nessuna analisi! 👇"
+    messaggi.append(intestazione)
+
+    # Un messaggio per ogni partita
+    for i, p in enumerate(pronostici, 1):
+        print(f"  Gemini analisi {i}/{len(pronostici)}: {p['home']} vs {p['away']}...")
+        testo = genera_messaggio_partita(p, now_it)
+        if testo:
+            messaggi.append(testo)
+        else:
+            # Fallback senza Gemini
+            fallback = f"*{p['home']} vs {p['away']}* ore {p['orario']} — _{p['competizione']}_\n\n🎯 *Pronostico: {p['pronostico_tip']}*\n\nQuote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}"
+            messaggi.append(fallback)
+
+    # Messaggio finale: chiusura
+    chiusura = "——————\n🔔 *Attiva le notifiche* per non perdere le prossime analisi!\n\n⚠️ Solo per maggiorenni — gioca responsabilmente. Le analisi sono a scopo informativo."
+    messaggi.append(chiusura)
+
+    return messaggi
+
+def invia_messaggio(testo):
+    """Invia un singolo messaggio Telegram."""
     if len(testo) > 4096:
         testo = testo[:4090] + "..."
     r = requests.post(
@@ -206,19 +213,26 @@ def pubblica_telegram(testo):
     )
     result = r.json()
     if result.get("ok"):
-        print(f"✅ Telegram OK — message_id: {result['result']['message_id']}")
         return result["result"]["message_id"]
     # Fallback senza markdown
     r2 = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         json={"chat_id": CHAT_ID, "text": testo}
     )
-    result2 = r2.json()
-    if result2.get("ok"):
-        print(f"✅ Telegram OK (no md) — {result2['result']['message_id']}")
-        return result2["result"]["message_id"]
-    print(f"❌ Telegram errore: {result2}")
-    return None
+    return r2.json().get("result", {}).get("message_id")
+
+def pubblica_telegram(messaggi):
+    """Pubblica una lista di messaggi su Telegram con pausa tra uno e l'altro."""
+    ids = []
+    for i, testo in enumerate(messaggi):
+        msg_id = invia_messaggio(testo)
+        if msg_id:
+            print(f"  ✅ Messaggio {i+1}/{len(messaggi)} — id: {msg_id}")
+            ids.append(msg_id)
+        else:
+            print(f"  ❌ Messaggio {i+1} fallito")
+        time.sleep(1)  # pausa 1s tra messaggi
+    return ids
 
 if __name__ == "__main__":
     now = get_now_it()
@@ -250,16 +264,12 @@ if __name__ == "__main__":
         exit(0)
 
     # Step 3: genera post con Gemini
-    post = genera_post_telegram(pronostici, now)
-    if not post:
-        print("Gemini non ha risposto. Stop.")
-        exit(1)
-
-    print(f"\n--- ANTEPRIMA POST ({len(post)} chars) ---")
-    print(post[:400] + "...")
+    messaggi = genera_post_telegram(pronostici, now)
+    print(f"\nMessaggi generati: {len(messaggi)}")
 
     # Step 4: pubblica
     print("\nPubblicazione Telegram...")
-    pubblica_telegram(post)
+    ids = pubblica_telegram(messaggi)
+    print(f"Pubblicati {len(ids)} messaggi su Telegram.")
 
     print("\n=== DONE ===")
