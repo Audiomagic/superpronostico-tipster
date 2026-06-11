@@ -163,8 +163,11 @@ Rispondi SOLO con un JSON valido, senza markdown, senza backtick, senza testo ag
     models = [
         "gemini-2.0-flash",
         "gemini-2.0-flash-lite",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro-latest",
+        "gemini-2.5-flash",
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest",
+        "gemini-pro-latest",
+        "gemini-2.5-flash-lite",
     ]
     body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}}
 
