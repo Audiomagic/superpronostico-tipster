@@ -10,7 +10,16 @@ import sys
 ODDS_API_KEY   = os.environ["ODDS_API_KEY"]
 BOT_TOKEN      = os.environ["BOT_TOKEN"]
 CHAT_ID        = os.environ["CHAT_ID"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+# Raccoglie tutte le API key Gemini disponibili (rotazione in caso di 429)
+GEMINI_API_KEYS = [
+    os.environ.get("GEMINI_API_KEY", ""),
+    os.environ.get("GEMINI_API_KEY_2", ""),
+    os.environ.get("GEMINI_API_KEY_3", ""),
+    os.environ.get("GEMINI_API_KEY_4", ""),
+    os.environ.get("GEMINI_API_KEY_5", ""),
+]
+GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]  # rimuove key vuote
+GEMINI_API_KEY = GEMINI_API_KEYS[0]  # backward compat per genera_immagine
 SHEET_ID       = os.environ["SHEET_ID"]
 GOOGLE_CREDS   = os.environ["GOOGLE_CREDS"]
 
@@ -157,14 +166,14 @@ Rispondi SOLO con un JSON valido, senza markdown, senza backtick, senza testo ag
         "gemini-1.5-flash-latest",
         "gemini-1.5-pro-latest",
     ]
+    body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}}
 
-    for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}}
-
-        # Retry con backoff esponenziale
-        max_retries = 3
-        for attempt in range(max_retries):
+    # Ruota su ogni combinazione key+modello finché una funziona
+    for api_key in GEMINI_API_KEYS:
+        key_short = api_key[:12] + "..."
+        for model in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+            print(f"Provo {model} con key {key_short}")
             try:
                 r = requests.post(url, json=body, timeout=60)
                 if r.status_code == 200:
@@ -172,30 +181,26 @@ Rispondi SOLO con un JSON valido, senza markdown, senza backtick, senza testo ag
                     text = text.replace("```json", "").replace("```", "").strip()
                     try:
                         decision = json.loads(text)
-                        print(f"Gemini ({model}): pubblica={decision.get('pubblica')}")
+                        print(f"OK — pubblica={decision.get('pubblica')}")
                         print(f"Ragionamento: {decision.get('ragionamento', '')}")
                         return decision
                     except json.JSONDecodeError as e:
-                        print(f"Errore parsing JSON ({model}): {{e}}\nTesto: {{text[:300]}}")
-                        break  # JSON malformato, proviamo modello successivo
+                        print(f"Errore JSON: {e} — provo prossimo modello")
+                        break
                 elif r.status_code == 429:
-                    wait = (2 ** attempt) * 10  # 10s, 20s, 40s
-                    print(f"Gemini ({model}) 429 rate limit — attendo {wait}s (tentativo {attempt+1}/{max_retries})")
-                    if attempt < max_retries - 1:
-                        time.sleep(wait)
-                    else:
-                        print(f"Gemini ({model}) esaurito dopo {max_retries} tentativi, provo modello successivo")
+                    print(f"429 rate limit su {model}/{key_short} — provo prossimo")
+                    continue
+                elif r.status_code == 404:
+                    print(f"404 modello non trovato: {model} — provo prossimo")
+                    continue
                 else:
-                    print(f"Gemini ({model}) errore {r.status_code} — provo modello successivo")
-                    break
+                    print(f"Errore {r.status_code} su {model}/{key_short} — provo prossimo")
+                    continue
             except Exception as e:
-                print(f"Gemini ({model}) eccezione: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(5)
-                else:
-                    break
+                print(f"Eccezione {model}/{key_short}: {e}")
+                continue
 
-    print("Tutti i modelli Gemini hanno fallito.")
+    print("Tutte le key e modelli Gemini hanno fallito.")
     return None
 def genera_immagine(decision):
     picks = decision["picks"]
