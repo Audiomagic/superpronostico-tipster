@@ -150,11 +150,12 @@ Rispondi SOLO con un JSON valido, senza markdown, senza backtick, senza testo ag
 
 {{"pubblica": true, "motivo_no": null, "tipo": "combo", "picks": [{{"home": "squadra", "away": "squadra", "competition": "nome", "sport_key": "key", "time": "HH:MM", "sign": "1", "odd": 1.5}}], "total_odd": 8.5, "vincita": 85.0, "signs_string": "1 - X - 2", "ragionamento": "spiegazione"}}"""
 
-    # Modelli in ordine di fallback
+    # Modelli in ordine di fallback (tutti disponibili su Gemini API gratuita)
     models = [
         "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro-latest",
     ]
 
     for model in models:
