@@ -24,6 +24,63 @@ HEADERS = {
 }
 BASE_URL = "https://www.sportytrader.it"
 
+
+LEAGUE_QUOTE_URLS = [
+    "https://www.sportytrader.it/quote/calcio/mondo/mondiali-1811/",
+    "https://www.sportytrader.it/quote/calcio/europa/champions-league-8/",
+    "https://www.sportytrader.it/quote/calcio/europa/europa-league-481/",
+    "https://www.sportytrader.it/quote/calcio/italia/serie-a-79/",
+    "https://www.sportytrader.it/quote/calcio/inghilterra/premier-league-49/",
+    "https://www.sportytrader.it/quote/calcio/spagna/laliga-108/",
+    "https://www.sportytrader.it/quote/calcio/germania/bundesliga-65/",
+    "https://www.sportytrader.it/quote/calcio/francia/ligue-1-123/",
+]
+
+def build_orari_map_it(oggi_giorno, oggi_mese):
+    mesi = {"gen":1,"feb":2,"mar":3,"apr":4,"mag":5,"giu":6,"lug":7,"ago":8,"set":9,"ott":10,"nov":11,"dic":12}
+    orari_map = {}
+    for url in LEAGUE_QUOTE_URLS:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, "html.parser")
+            main = soup.select_one("main")
+            if not main:
+                continue
+            lines = [l.strip() for l in main.get_text(separator="\n").split("\n") if l.strip()]
+            i = 0
+            while i < len(lines):
+                m = re.match(r"^(\d{1,2})\s+(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+-\s+(\d{2}:\d{2})$", lines[i], re.IGNORECASE)
+                if m:
+                    giorno = int(m.group(1))
+                    mese = mesi.get(m.group(2).lower(), 6)
+                    orario_it = m.group(3)
+                    if giorno == oggi_giorno and mese == oggi_mese:
+                        if i+1 < len(lines):
+                            orari_map[lines[i+1]] = orario_it
+                i += 1
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"Errore quote {url}: {e}")
+    print(f"Orari IT trovati: {len(orari_map)}")
+    for k, v in orari_map.items():
+        print(f"  {k} -> {v}")
+    return orari_map
+
+def trova_orario_it(home, away, orari_map):
+    chiave = f"{home} - {away}"
+    if chiave in orari_map:
+        return orari_map[chiave]
+    for k, v in orari_map.items():
+        parti = k.split(" - ")
+        if len(parti) == 2:
+            h = parti[0].lower().strip()
+            a = parti[1].lower().strip()
+            if (h in home.lower() or home.lower() in h) and (a in away.lower() or away.lower() in a):
+                return v
+    return None
+
 def get_now_it():
     return datetime.now(timezone(timedelta(hours=2)))
 
@@ -67,7 +124,186 @@ def scrape_lista_pronostici():
     print(f"Link pronostici trovati: {len(links)}")
     return list(links)
 
-def scrape_pronostico(url, oggi_str):
+def scrape_pronostico(url, oggi_str, orari_map=None):
+    """Scrapa una singola pagina pronostico e restituisce i dati strutturati.
+    oggi_str = data di oggi in formato GG/MM/AA (es. '12/06/26')
+    Filtra solo partite di OGGI tra le 08:00 e le 23:59 IT.
+    """
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if r.status_code != 200:
+            return None
+        soup = BeautifulSoup(r.text, "html.parser")
+        main = soup.select_one("main")
+        if not main:
+            return None
+
+        lines = [l.strip() for l in main.get_text(separator="\n").split("\n") if l.strip()]
+
+        # Estrai dati strutturati
+        home = away = orario = data_partita = competizione = pronostico_tip = analisi = ""
+        odds_1 = odds_x = odds_2 = "N/D"
+
+        # Cerca data, orario e squadre (nelle prime righe)
+        for i, line in enumerate(lines[:15]):
+            if re.match(r"^\d{2}/\d{2}/\d{2}$", line):
+                data_partita = line  # es. "12/06/26" — già in orario IT
+                # Orario è la riga successiva
+                if i + 1 < len(lines) and re.match(r"^\d{2}:\d{2}$", lines[i+1]):
+                    orario = lines[i+1]
+                # Home è la riga precedente, Away è 2 righe dopo
+                if i > 0:
+                    home = lines[i-1]
+                if i + 2 < len(lines):
+                    away = lines[i+2]
+            if any(k in line for k in ["Mondiali", "Serie A", "Champions", "Premier", "Europa", "Liga", "Bundesliga", "Ligue", "Conference"]):
+                competizione = line.replace("Pronostico ", "").replace("Mondo - ", "")
+
+        # FILTRO 1: solo partite di OGGI
+        if data_partita != oggi_str:
+            print(f"    ⏭ Skip {home} vs {away} — data {data_partita} (oggi={oggi_str})")
+            return None
+
+                # Sostituisci orario con quello IT dalla mappa quote
+        if orari_map:
+            orario_it = trova_orario_it(home, away, orari_map)
+            if orario_it:
+                print(f"    Orario IT: {orario_it} (era: {orario})")
+                orario = orario_it
+
+        # FILTRO 2: solo partite dalle 08:00 alle 23:59 IT
+        if orario:
+            try:
+                ora_h = int(orario.split(":")[0])
+                if ora_h < 8:
+                    print(f"    Skip {home} vs {away} - orario IT {orario} (prima delle 08:00)")
+                    return None
+            except:
+                pass
+port re
+from bs4 import BeautifulSoup
+from datetime import datetime, timezone, timedelta
+
+# ─── CONFIG ──────────────────────────────────────────────────
+BOT_TOKEN       = os.environ["BOT_TOKEN"]
+CHAT_ID         = os.environ["CHAT_ID"]
+GEMINI_API_KEYS = [k for k in [
+    os.environ.get("GEMINI_API_KEY"),
+    os.environ.get("GEMINI_API_KEY_2"),
+    os.environ.get("GEMINI_API_KEY_3"),
+] if k]
+GEMINI_MODELS = [
+    "gemini-2.0-flash", "gemini-2.0-flash-lite",
+    "gemini-2.5-flash", "gemini-flash-latest",
+]
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "it-IT,it;q=0.9",
+}
+BASE_URL = "https://www.sportytrader.it"
+
+
+LEAGUE_QUOTE_URLS = [
+    "https://www.sportytrader.it/quote/calcio/mondo/mondiali-1811/",
+    "https://www.sportytrader.it/quote/calcio/europa/champions-league-8/",
+    "https://www.sportytrader.it/quote/calcio/europa/europa-league-481/",
+    "https://www.sportytrader.it/quote/calcio/italia/serie-a-79/",
+    "https://www.sportytrader.it/quote/calcio/inghilterra/premier-league-49/",
+    "https://www.sportytrader.it/quote/calcio/spagna/laliga-108/",
+    "https://www.sportytrader.it/quote/calcio/germania/bundesliga-65/",
+    "https://www.sportytrader.it/quote/calcio/francia/ligue-1-123/",
+]
+
+def build_orari_map_it(oggi_giorno, oggi_mese):
+    mesi = {"gen":1,"feb":2,"mar":3,"apr":4,"mag":5,"giu":6,"lug":7,"ago":8,"set":9,"ott":10,"nov":11,"dic":12}
+    orari_map = {}
+    for url in LEAGUE_QUOTE_URLS:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, "html.parser")
+            main = soup.select_one("main")
+            if not main:
+                continue
+            lines = [l.strip() for l in main.get_text(separator="\n").split("\n") if l.strip()]
+            i = 0
+            while i < len(lines):
+                m = re.match(r"^(\d{1,2})\s+(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+-\s+(\d{2}:\d{2})$", lines[i], re.IGNORECASE)
+                if m:
+                    giorno = int(m.group(1))
+                    mese = mesi.get(m.group(2).lower(), 6)
+                    orario_it = m.group(3)
+                    if giorno == oggi_giorno and mese == oggi_mese:
+                        if i+1 < len(lines):
+                            orari_map[lines[i+1]] = orario_it
+                i += 1
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"Errore quote {url}: {e}")
+    print(f"Orari IT trovati: {len(orari_map)}")
+    for k, v in orari_map.items():
+        print(f"  {k} -> {v}")
+    return orari_map
+
+def trova_orario_it(home, away, orari_map):
+    chiave = f"{home} - {away}"
+    if chiave in orari_map:
+        return orari_map[chiave]
+    for k, v in orari_map.items():
+        parti = k.split(" - ")
+        if len(parti) == 2:
+            h = parti[0].lower().strip()
+            a = parti[1].lower().strip()
+            if (h in home.lower() or home.lower() in h) and (a in away.lower() or away.lower() in a):
+                return v
+    return None
+
+def get_now_it():
+    return datetime.now(timezone(timedelta(hours=2)))
+
+def chiedi_gemini(prompt):
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 3000}
+    }
+    for key in GEMINI_API_KEYS:
+        for model in GEMINI_MODELS:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            try:
+                r = requests.post(url, json=body, timeout=60)
+                if r.status_code == 200:
+                    return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                elif r.status_code == 429:
+                    continue
+            except:
+                continue
+    return None
+
+def scrape_lista_pronostici():
+    """Scrapa la pagina principale e trova i link dei pronostici di oggi."""
+    r = requests.get(f"{BASE_URL}/pronostici/calcio/", headers=HEADERS, timeout=15)
+    if r.status_code != 200:
+        print(f"Errore fetch lista: {r.status_code}")
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    today = get_now_it().strftime("%d/%m/%y")
+
+    # Trova tutti i link pronostici (hanno un numero ID alla fine)
+    links = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        # Link tipo /pronostici/nome-squadra1-nome-squadra2-123456/
+        if re.search(r"/pronostici/[a-z0-9-]+-\d{5,}/?$", href):
+            full = href if href.startswith("http") else BASE_URL + href
+            links.add(full)
+
+    print(f"Link pronostici trovati: {len(links)}")
+    return list(links)
+
+def scrape_pronostico(url, oggi_str, orari_map=None):
     """Scrapa una singola pagina pronostico e restituisce i dati strutturati.
     oggi_str = data di oggi in formato GG/MM/AA (es. '12/06/26')
     Filtra solo partite di OGGI tra le 08:00 e le 23:59 IT.
@@ -266,11 +502,17 @@ if __name__ == "__main__":
     print(f"\nScraping {len(urls)} pagine pronostici...")
     pronostici = []
     oggi_str = now.strftime("%d/%m/%y")  # es. "12/06/26"
+    oggi_giorno = now.day
+    oggi_mese = now.month
     print(f"Filtro partite per oggi: {oggi_str} dalle 08:00 alle 23:59 IT")
+
+    # Costruisce mappa orari IT leggendo le pagine quote di SportyTrader
+    print("\nLettura orari IT da SportyTrader...")
+    orari_map = build_orari_map_it(oggi_giorno, oggi_mese)
 
     for url in urls:  # scorriamo tutti, filtro interno
         print(f"  {url.split('/')[-2]}")
-        dati = scrape_pronostico(url, oggi_str)
+        dati = scrape_pronostico(url, oggi_str, orari_map)
         if dati:
             pronostici.append(dati)
             print(f"    ✅ {dati['home']} vs {dati['away']} | tip: {dati['pronostico_tip']} | 1={dati['odds_1']} X={dati['odds_x']} 2={dati['odds_2']}")
