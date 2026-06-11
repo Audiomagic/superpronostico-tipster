@@ -67,8 +67,11 @@ def scrape_lista_pronostici():
     print(f"Link pronostici trovati: {len(links)}")
     return list(links)
 
-def scrape_pronostico(url):
-    """Scrapa una singola pagina pronostico e restituisce i dati strutturati."""
+def scrape_pronostico(url, oggi_str):
+    """Scrapa una singola pagina pronostico e restituisce i dati strutturati.
+    oggi_str = data di oggi in formato GG/MM/AA (es. '12/06/26')
+    Filtra solo partite di OGGI tra le 08:00 e le 23:59 IT.
+    """
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         if r.status_code != 200:
@@ -81,22 +84,35 @@ def scrape_pronostico(url):
         lines = [l.strip() for l in main.get_text(separator="\n").split("\n") if l.strip()]
 
         # Estrai dati strutturati
-        home = away = orario = competizione = pronostico_tip = analisi = ""
+        home = away = orario = data_partita = competizione = pronostico_tip = analisi = ""
         odds_1 = odds_x = odds_2 = "N/D"
 
-        # Cerca squadre e orario (nelle prime righe)
+        # Cerca data, orario e squadre (nelle prime righe)
         for i, line in enumerate(lines[:15]):
             if re.match(r"^\d{2}/\d{2}/\d{2}$", line):
-                # Data — orario è la riga successiva
+                data_partita = line  # es. "12/06/26" — già in orario IT
+                # Orario è la riga successiva
                 if i + 1 < len(lines) and re.match(r"^\d{2}:\d{2}$", lines[i+1]):
                     orario = lines[i+1]
-                # Squadre sono intorno
+                # Home è la riga precedente, Away è 2 righe dopo
                 if i > 0:
                     home = lines[i-1]
                 if i + 2 < len(lines):
                     away = lines[i+2]
-            if "Mondiali" in line or "Serie A" in line or "Champions" in line or "Premier" in line or "Europa" in line or "Liga" in line or "Bundesliga" in line or "Ligue" in line:
+            if any(k in line for k in ["Mondiali", "Serie A", "Champions", "Premier", "Europa", "Liga", "Bundesliga", "Ligue", "Conference"]):
                 competizione = line.replace("Pronostico ", "").replace("Mondo - ", "")
+
+        # FILTRO 1: solo partite di OGGI
+        if data_partita != oggi_str:
+            print(f"    ⏭ Skip {home} vs {away} — data {data_partita} (oggi={oggi_str})")
+            return None
+
+        # FILTRO 2: solo partite dalle 08:00 alle 23:59 IT
+        if orario:
+            ora_h = int(orario.split(":")[0])
+            if ora_h < 8:
+                print(f"    ⏭ Skip {home} vs {away} — orario {orario} (prima delle 08:00)")
+                return None
 
         # Cerca il pronostico (riga dopo "Il pronostico:")
         for i, line in enumerate(lines):
@@ -249,9 +265,12 @@ if __name__ == "__main__":
     # Step 2: scrapa ogni pagina
     print(f"\nScraping {len(urls)} pagine pronostici...")
     pronostici = []
-    for url in urls[:8]:  # max 8 partite per non fare il post troppo lungo
+    oggi_str = now.strftime("%d/%m/%y")  # es. "12/06/26"
+    print(f"Filtro partite per oggi: {oggi_str} dalle 08:00 alle 23:59 IT")
+
+    for url in urls:  # scorriamo tutti, filtro interno
         print(f"  {url.split('/')[-2]}")
-        dati = scrape_pronostico(url)
+        dati = scrape_pronostico(url, oggi_str)
         if dati:
             pronostici.append(dati)
             print(f"    ✅ {dati['home']} vs {dati['away']} | tip: {dati['pronostico_tip']} | 1={dati['odds_1']} X={dati['odds_x']} 2={dati['odds_2']}")
@@ -259,8 +278,11 @@ if __name__ == "__main__":
 
     print(f"\nPronostici raccolti: {len(pronostici)}")
 
+    # Limita a max 8 partite per non fare il post troppo lungo
+    pronostici = pronostici[:8]
+
     if not pronostici:
-        print("Nessun pronostico valido. Stop.")
+        print("Nessun pronostico valido per oggi. Stop.")
         exit(0)
 
     # Step 3: genera post con Gemini
