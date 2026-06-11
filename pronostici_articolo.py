@@ -1,27 +1,28 @@
 import requests
 import os
-import json
 import time
+import re
+from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 
 # ─── CONFIG ──────────────────────────────────────────────────
 BOT_TOKEN       = os.environ["BOT_TOKEN"]
 CHAT_ID         = os.environ["CHAT_ID"]
-APIFOOTBALL_KEY = os.environ["APIFOOTBALL_KEY"]
 GEMINI_API_KEYS = [k for k in [
     os.environ.get("GEMINI_API_KEY"),
     os.environ.get("GEMINI_API_KEY_2"),
     os.environ.get("GEMINI_API_KEY_3"),
 ] if k]
-
 GEMINI_MODELS = [
     "gemini-2.0-flash", "gemini-2.0-flash-lite",
     "gemini-2.5-flash", "gemini-flash-latest",
 ]
 
-# Campionati prioritari in ordine di importanza
-TOP_LEAGUES = [1, 2, 3, 135, 39, 140, 78, 61]
-LEAGUE_PRIORITY = {lid: i for i, lid in enumerate(TOP_LEAGUES)}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "it-IT,it;q=0.9",
+}
+BASE_URL = "https://www.sportytrader.it"
 
 def get_now_it():
     return datetime.now(timezone(timedelta(hours=2)))
@@ -29,7 +30,7 @@ def get_now_it():
 def chiedi_gemini(prompt):
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 2000}
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 3000}
     }
     for key in GEMINI_API_KEYS:
         for model in GEMINI_MODELS:
@@ -44,155 +45,169 @@ def chiedi_gemini(prompt):
                 continue
     return None
 
-def fetch_odds_bulk(fixture_ids, api_key):
-    """Fetcha le quote per una lista di fixture in UNA sola chiamata per fixture."""
-    headers = {"x-apisports-key": api_key}
-    odds_map = {}
-    for fid in fixture_ids:
-        ro = requests.get("https://v3.football.api-sports.io/odds",
-            headers=headers,
-            params={"fixture": fid})
-        data = ro.json().get("response", [])
-        if data:
-            for bk in data[0].get("bookmakers", []):
-                for bet in bk.get("bets", []):
-                    if bet["name"] == "Match Winner":
-                        o1 = ox = o2 = None
-                        for v in bet["values"]:
-                            if v["value"] == "Home": o1 = v["odd"]
-                            elif v["value"] == "Draw": ox = v["odd"]
-                            elif v["value"] == "Away": o2 = v["odd"]
-                        odds_map[fid] = {"1": o1, "X": ox, "2": o2}
-                        break
-                if fid in odds_map:
-                    break
-        time.sleep(0.2)
-    return odds_map
-
-def fetch_partite_oggi():
-    """Fetcha tutte le partite dei campionati top di oggi."""
-    headers = {"x-apisports-key": APIFOOTBALL_KEY}
-    now_it = get_now_it()
-    date_str = now_it.strftime("%Y-%m-%d")
-
-    print(f"Cerco partite per {date_str}...")
-    r = requests.get("https://v3.football.api-sports.io/fixtures",
-        headers=headers,
-        params={"date": date_str, "timezone": "Europe/Rome"})
-
+def scrape_lista_pronostici():
+    """Scrapa la pagina principale e trova i link dei pronostici di oggi."""
+    r = requests.get(f"{BASE_URL}/pronostici/calcio/", headers=HEADERS, timeout=15)
     if r.status_code != 200:
-        print(f"API-Football errore: {r.status_code}")
+        print(f"Errore fetch lista: {r.status_code}")
         return []
 
-    all_fixtures = r.json().get("response", [])
-    print(f"Totale fixture oggi: {len(all_fixtures)}")
+    soup = BeautifulSoup(r.text, "html.parser")
+    today = get_now_it().strftime("%d/%m/%y")
 
-    # Filtra campionati top — includi NS (non iniziate) e anche FT (finite, per analisi)
-    # Ma escludi quelle già iniziate da più di 30 minuti
-    partite_raw = []
-    for f in all_fixtures:
-        if f["league"]["id"] not in TOP_LEAGUES:
-            continue
-        status = f["fixture"]["status"]["short"]
-        # Includi: non iniziate, da iniziare, o che iniziano oggi
-        if status not in ["NS", "TBD", "PST"]:
-            continue
-        partite_raw.append(f)
+    # Trova tutti i link pronostici (hanno un numero ID alla fine)
+    links = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        # Link tipo /pronostici/nome-squadra1-nome-squadra2-123456/
+        if re.search(r"/pronostici/[a-z0-9-]+-\d{5,}/?$", href):
+            full = href if href.startswith("http") else BASE_URL + href
+            links.add(full)
 
-    print(f"Partite nei campionati top (NS/TBD): {len(partite_raw)}")
+    print(f"Link pronostici trovati: {len(links)}")
+    return list(links)
 
-    if not partite_raw:
-        print("Nessuna partita trovata. Controllo leagues presenti oggi:")
-        leagues_today = {}
-        for f in all_fixtures:
-            lid = f["league"]["id"]
-            lname = f["league"]["name"]
-            leagues_today[lid] = lname
-        for lid, lname in sorted(leagues_today.items())[:20]:
-            print(f"  [{lid}] {lname}")
-        return []
+def scrape_pronostico(url):
+    """Scrapa una singola pagina pronostico e restituisce i dati strutturati."""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if r.status_code != 200:
+            return None
+        soup = BeautifulSoup(r.text, "html.parser")
+        main = soup.select_one("main")
+        if not main:
+            return None
 
-    # Fetch quote in bulk (1 chiamata per fixture)
-    fixture_ids = [f["fixture"]["id"] for f in partite_raw]
-    print(f"Fetch quote per {len(fixture_ids)} partite...")
-    odds_map = fetch_odds_bulk(fixture_ids, APIFOOTBALL_KEY)
+        lines = [l.strip() for l in main.get_text(separator="\n").split("\n") if l.strip()]
 
-    # Assembla risultato finale
-    partite = []
-    for f in partite_raw:
-        fid = f["fixture"]["id"]
-        odds = odds_map.get(fid, {})
-        partite.append({
-            "id": fid,
-            "home": f["teams"]["home"]["name"],
-            "away": f["teams"]["away"]["name"],
-            "orario": f["fixture"]["date"][11:16],
-            "league": f["league"]["name"],
-            "league_id": f["league"]["id"],
-            "odds_1": odds.get("1") or "N/D",
-            "odds_x": odds.get("X") or "N/D",
-            "odds_2": odds.get("2") or "N/D",
-        })
-        print(f"  {f['fixture']['date'][11:16]} {f['teams']['home']['name']} vs {f['teams']['away']['name']} [{f['league']['name']}] 1={odds.get('1','N/D')} X={odds.get('X','N/D')} 2={odds.get('2','N/D')}")
+        # Estrai dati strutturati
+        home = away = orario = competizione = pronostico_tip = analisi = ""
+        odds_1 = odds_x = odds_2 = "N/D"
 
-    # Ordina per priorità lega poi orario
-    partite.sort(key=lambda x: (LEAGUE_PRIORITY.get(x["league_id"], 99), x["orario"]))
-    return partite
+        # Cerca squadre e orario (nelle prime righe)
+        for i, line in enumerate(lines[:15]):
+            if re.match(r"^\d{2}/\d{2}/\d{2}$", line):
+                # Data — orario è la riga successiva
+                if i + 1 < len(lines) and re.match(r"^\d{2}:\d{2}$", lines[i+1]):
+                    orario = lines[i+1]
+                # Squadre sono intorno
+                if i > 0:
+                    home = lines[i-1]
+                if i + 2 < len(lines):
+                    away = lines[i+2]
+            if "Mondiali" in line or "Serie A" in line or "Champions" in line or "Premier" in line or "Europa" in line or "Liga" in line or "Bundesliga" in line or "Ligue" in line:
+                competizione = line.replace("Pronostico ", "").replace("Mondo - ", "")
 
-def genera_articolo(partite, now_it):
-    partite_testo = ""
-    for i, p in enumerate(partite, 1):
-        q1 = f"@{p['odds_1']}" if p['odds_1'] != "N/D" else ""
-        qx = f"@{p['odds_x']}" if p['odds_x'] != "N/D" else ""
-        q2 = f"@{p['odds_2']}" if p['odds_2'] != "N/D" else ""
-        partite_testo += f"{i}. {p['home']} vs {p['away']} ({p['league']}) ore {p['orario']}\n"
-        if p['odds_1'] != "N/D":
-            partite_testo += f"   Quote: 1={p['odds_1']}  X={p['odds_x']}  2={p['odds_2']}\n"
-        partite_testo += "\n"
+        # Cerca il pronostico (riga dopo "Il pronostico:")
+        for i, line in enumerate(lines):
+            if "Il pronostico:" in line and i + 1 < len(lines):
+                pronostico_tip = lines[i+1]
+                break
 
-    prompt = f"""Sei un analista calcistico professionista italiano che scrive per il canale Telegram SuperPronostico.
+        # Analisi testuale (righe lunghe dopo "Pronostico [Competizione]")
+        analisi_lines = []
+        capture = False
+        for line in lines:
+            if capture:
+                if len(line) > 60 and not any(x in line for x in ["Bookmaker", "Bonus", "Offerta", "quote", "Quote", "Vedere tutte", "scommettere"]):
+                    analisi_lines.append(line)
+                if len(analisi_lines) >= 4:
+                    break
+            if line.startswith("Pronostico ") and any(x in line for x in ["Mondiali", "Serie A", "Champions", "Premier", "Europa", "Liga", "Bundesliga", "Ligue"]):
+                capture = True
+        analisi = " ".join(analisi_lines)
+
+        # Quote: pattern "1 X 2" poi righe con numeri
+        quote_section = False
+        quote_rows = []
+        for i, line in enumerate(lines):
+            if line == "1" and i+1 < len(lines) and lines[i+1] == "X":
+                quote_section = True
+                continue
+            if quote_section and re.match(r"^\d\.\d+$", line):
+                quote_rows.append(line)
+            if len(quote_rows) >= 3:
+                break
+
+        if len(quote_rows) >= 3:
+            odds_1, odds_x, odds_2 = quote_rows[0], quote_rows[1], quote_rows[2]
+
+        # Fallback: usa il selettore CSS per le quote
+        if odds_1 == "N/D":
+            quote_els = main.select(".pastille--cotes")
+            vals = [el.get_text(strip=True) for el in quote_els if re.match(r"^\d\.\d+$", el.get_text(strip=True))]
+            if len(vals) >= 3:
+                odds_1, odds_x, odds_2 = vals[0], vals[1], vals[2]
+
+        if not home or not away:
+            return None
+
+        return {
+            "url": url,
+            "home": home,
+            "away": away,
+            "orario": orario,
+            "competizione": competizione or "Calcio",
+            "pronostico_tip": pronostico_tip,
+            "analisi": analisi,
+            "odds_1": odds_1,
+            "odds_x": odds_x,
+            "odds_2": odds_2,
+        }
+    except Exception as e:
+        print(f"Errore scraping {url}: {e}")
+        return None
+
+def genera_post_telegram(pronostici, now_it):
+    """Usa Gemini per creare un post Telegram con tutti i pronostici."""
+
+    pronostici_testo = ""
+    for p in pronostici:
+        pronostici_testo += f"--- {p['home']} vs {p['away']} ({p['competizione']}) ore {p['orario']} ---\n"
+        pronostici_testo += f"Pronostico degli esperti: {p['pronostico_tip']}\n"
+        if p['analisi']:
+            pronostici_testo += f"Analisi: {p['analisi'][:300]}\n"
+        pronostici_testo += f"Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}\n\n"
+
+    prompt = f"""Sei un analista calcistico professionista italiano che scrive per il canale Telegram @SuperPronostico.
 Oggi e {now_it.strftime('%A %d %B %Y')}.
 
-Scrivi un post Telegram professionale con l'analisi delle partite di oggi.
-Tono: autorevole, appassionato, da vero esperto calcistico italiano.
+Hai raccolto questi pronostici da esperti per le partite di oggi:
 
-PARTITE DI OGGI:
-{partite_testo}
+{pronostici_testo}
 
-STRUTTURA DEL POST:
-1. Intestazione con emoji calcio, data e titolo tipo "LE ANALISI DI OGGI ⚽"
-2. Per ogni partita:
-   - *Home vs Away* (orario) — lega in corsivo
-   - 2-3 righe di analisi: contesto partita, punti di forza, fattore chiave
-   - *Pronostico: [segno] [motivazione breve]* con quota se disponibile
-   - Se quote disponibili: una riga Quote: 1=X X=X 2=X
-   - Riga separatrice ——————
-3. Chiusura: invito a seguire il canale + disclaimer gioco responsabile
+Scrivi un post Telegram professionale e coinvolgente che:
+1. Inizia con un'intestazione accattivante (es: "🔥 LE ANALISI DI OGGI — [DATA]")
+2. Per ogni partita scrive:
+   - *Home vs Away* ore [orario] — _competizione_
+   - 2-3 righe di analisi vivace e professionale basata sui dati forniti
+   - *🎯 Pronostico: [il pronostico degli esperti]* con quota
+   - Quote: 1=[X] X=[X] 2=[X]
+   - ——————
+3. Chiude con un invito a seguire il canale e disclaimer
 
 REGOLE FORMATO TELEGRAM:
-- *testo* per grassetto
-- _testo_ per corsivo  
-- Emoji vivaci ⚽🔥📊💡🎯
-- Massimo 3800 caratteri totali
+- *grassetto* con asterischi
+- _corsivo_ con underscore
+- Emoji vivaci ⚽🔥📊🎯💡
+- Max 3800 caratteri totali
 - Solo italiano
 - Solo il testo del post, nient'altro"""
 
-    print("Gemini sta scrivendo l'articolo...")
+    print("Gemini sta generando il post...")
     return chiedi_gemini(prompt)
 
 def pubblica_telegram(testo):
     if len(testo) > 4096:
         testo = testo[:4090] + "..."
-
     r = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         json={"chat_id": CHAT_ID, "text": testo, "parse_mode": "Markdown"}
     )
     result = r.json()
     if result.get("ok"):
-        print(f"Telegram OK — message_id: {result['result']['message_id']}")
+        print(f"✅ Telegram OK — message_id: {result['result']['message_id']}")
         return result["result"]["message_id"]
-
     # Fallback senza markdown
     r2 = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -200,33 +215,51 @@ def pubblica_telegram(testo):
     )
     result2 = r2.json()
     if result2.get("ok"):
-        print(f"Telegram OK (no md) — message_id: {result2['result']['message_id']}")
+        print(f"✅ Telegram OK (no md) — {result2['result']['message_id']}")
         return result2["result"]["message_id"]
-    print(f"Telegram errore: {result2}")
+    print(f"❌ Telegram errore: {result2}")
     return None
 
 if __name__ == "__main__":
     now = get_now_it()
-    print(f"=== PRONOSTICI ARTICOLO — {now.strftime('%d/%m/%Y %H:%M')} ===")
+    print(f"=== PRONOSTICI SPORTYTRADER — {now.strftime('%d/%m/%Y %H:%M')} ===")
 
-    partite = fetch_partite_oggi()
-    print(f"\nPartite selezionate: {len(partite)}")
+    # Step 1: lista link
+    print("\nScraping lista pronostici SportyTrader...")
+    urls = scrape_lista_pronostici()
 
-    if not partite:
-        print("Nessuna partita nei campionati top oggi. Stop.")
+    if not urls:
+        print("Nessun pronostico trovato. Stop.")
         exit(0)
 
-    articolo = genera_articolo(partite, now)
+    # Step 2: scrapa ogni pagina
+    print(f"\nScraping {len(urls)} pagine pronostici...")
+    pronostici = []
+    for url in urls[:8]:  # max 8 partite per non fare il post troppo lungo
+        print(f"  {url.split('/')[-2]}")
+        dati = scrape_pronostico(url)
+        if dati:
+            pronostici.append(dati)
+            print(f"    ✅ {dati['home']} vs {dati['away']} | tip: {dati['pronostico_tip']} | 1={dati['odds_1']} X={dati['odds_x']} 2={dati['odds_2']}")
+        time.sleep(0.5)
 
-    if not articolo:
+    print(f"\nPronostici raccolti: {len(pronostici)}")
+
+    if not pronostici:
+        print("Nessun pronostico valido. Stop.")
+        exit(0)
+
+    # Step 3: genera post con Gemini
+    post = genera_post_telegram(pronostici, now)
+    if not post:
         print("Gemini non ha risposto. Stop.")
         exit(1)
 
-    print("\n--- ANTEPRIMA ARTICOLO ---")
-    print(articolo[:400] + "...")
-    print(f"\nLunghezza: {len(articolo)} caratteri")
+    print(f"\n--- ANTEPRIMA POST ({len(post)} chars) ---")
+    print(post[:400] + "...")
 
+    # Step 4: pubblica
     print("\nPubblicazione Telegram...")
-    pubblica_telegram(articolo)
+    pubblica_telegram(post)
 
     print("\n=== DONE ===")
