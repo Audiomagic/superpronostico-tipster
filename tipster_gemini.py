@@ -158,8 +158,8 @@ Rispondi SOLO con un JSON valido, senza markdown, senza backtick, senza testo ag
     ]
 
     for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={{GEMINI_API_KEY}}"
-        body = {{"contents": [{{"parts": [{{"text": prompt}}]}}], "generationConfig": {{"temperature": 0.3, "maxOutputTokens": 1000}}}}
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}}
 
         # Retry con backoff esponenziale
         max_retries = 3
@@ -171,24 +171,24 @@ Rispondi SOLO con un JSON valido, senza markdown, senza backtick, senza testo ag
                     text = text.replace("```json", "").replace("```", "").strip()
                     try:
                         decision = json.loads(text)
-                        print(f"Gemini ({model}): pubblica={{decision.get('pubblica')}}")
-                        print(f"Ragionamento: {{decision.get('ragionamento', '')}}")
+                        print(f"Gemini ({model}): pubblica={decision.get('pubblica')}")
+                        print(f"Ragionamento: {decision.get('ragionamento', '')}")
                         return decision
                     except json.JSONDecodeError as e:
                         print(f"Errore parsing JSON ({model}): {{e}}\nTesto: {{text[:300]}}")
                         break  # JSON malformato, proviamo modello successivo
                 elif r.status_code == 429:
                     wait = (2 ** attempt) * 10  # 10s, 20s, 40s
-                    print(f"Gemini ({model}) 429 rate limit — attendo {{wait}}s (tentativo {{attempt+1}}/{{max_retries}})")
+                    print(f"Gemini ({model}) 429 rate limit — attendo {wait}s (tentativo {attempt+1}/{max_retries})")
                     if attempt < max_retries - 1:
                         time.sleep(wait)
                     else:
-                        print(f"Gemini ({model}) esaurito dopo {{max_retries}} tentativi, provo modello successivo")
+                        print(f"Gemini ({model}) esaurito dopo {max_retries} tentativi, provo modello successivo")
                 else:
-                    print(f"Gemini ({model}) errore {{r.status_code}} — provo modello successivo")
+                    print(f"Gemini ({model}) errore {r.status_code} — provo modello successivo")
                     break
             except Exception as e:
-                print(f"Gemini ({model}) eccezione: {{e}}")
+                print(f"Gemini ({model}) eccezione: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(5)
                 else:
