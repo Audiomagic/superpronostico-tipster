@@ -9,10 +9,18 @@ from datetime import datetime, timezone, timedelta
 BOT_TOKEN       = os.environ["BOT_TOKEN"]
 CHAT_ID         = os.environ["CHAT_ID"]
 ODDS_API_KEY    = os.environ["ODDS_API_KEY"]
+# Groq API keys (PRIMARIO)
+GROQ_API_KEYS = [k for k in [
+    os.environ.get("GROQ_API_KEY", ""),
+    os.environ.get("GROQ_API_KEY_2", ""),
+] if k]
+# Gemini API keys (FALLBACK)
 GEMINI_API_KEYS = [k for k in [
     os.environ.get("GEMINI_API_KEY"),
     os.environ.get("GEMINI_API_KEY_2"),
     os.environ.get("GEMINI_API_KEY_3"),
+    os.environ.get("GEMINI_API_KEY_4"),
+    os.environ.get("GEMINI_API_KEY_5"),
 ] if k]
 GEMINI_MODELS = [
     "gemini-2.0-flash", "gemini-2.0-flash-lite",
@@ -41,6 +49,42 @@ def get_now_it():
     return datetime.now(IT_TZ)
 
 # ─── GEMINI ──────────────────────────────────────────────────
+def chiedi_groq(prompt):
+    """Chiama Groq (llama-3.3-70b) — primario, 6.000 req/giorno free."""
+    for key in GROQ_API_KEYS:
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.7,
+                    "max_tokens": 1500,
+                },
+                timeout=30,
+            )
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"].strip()
+            elif r.status_code == 429:
+                print(f"Groq 429 su key ...{key[-6:]}")
+                continue
+        except Exception as e:
+            print(f"Groq errore: {e}")
+            continue
+    return None
+
+
+def chiedi_ai(prompt):
+    """Groq (primario) → Gemini (fallback)."""
+    if GROQ_API_KEYS:
+        result = chiedi_groq(prompt)
+        if result:
+            return result
+        print("Groq fallito — fallback su Gemini")
+    return chiedi_ai(prompt)
+
+
 def chiedi_gemini(prompt):
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -214,7 +258,7 @@ Scrivi UN messaggio Telegram (max 600 caratteri):
 - Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}
 
 Regole: *grassetto*, _corsivo_, emoji ⚽🔥🎯, solo italiano, solo il testo."""
-    return chiedi_gemini(prompt)
+    return chiedi_ai(prompt)
 
 def genera_tutti_messaggi(partite, now_it):
     messaggi = []
