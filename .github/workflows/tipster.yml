@@ -6,7 +6,7 @@ on:
     - cron: '0 15 * * *'    # 17:00 IT (UTC+2) — schedina sera
     - cron: '30 21 * * *'   # 23:30 IT (UTC+2) — controlla risultati notte
     - cron: '0 6 * * *'     # 08:00 IT (UTC+2) — controlla risultati mattino
-    - cron: '45 9 * * *'   # 11:45 IT (UTC+2) — pronostici articolo
+    - cron: '30 7 * * *'   # 09:30 IT (UTC+2) — pronostici articolo
   workflow_dispatch:
     inputs:
       action:
@@ -95,7 +95,7 @@ jobs:
 
   pronostici-articolo:
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '45 9 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '30 7 * * *') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'articolo')
     runs-on: ubuntu-latest
     steps:
