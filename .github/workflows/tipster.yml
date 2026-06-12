@@ -108,7 +108,7 @@ jobs:
         env:
           BOT_TOKEN:        ${{ secrets.BOT_TOKEN }}
           CHAT_ID:          ${{ secrets.CHAT_ID }}
-          APIFOOTBALL_KEY:  ${{ secrets.APIFOOTBALL_KEY }}
+          ODDS_API_KEY:     ${{ secrets.ODDS_API_KEY }}
           GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
