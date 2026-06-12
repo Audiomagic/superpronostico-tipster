@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 # ─── CONFIG ──────────────────────────────────────────────────
 BOT_TOKEN       = os.environ["BOT_TOKEN"]
 CHAT_ID         = os.environ["CHAT_ID"]
+ODDS_API_KEY    = os.environ["ODDS_API_KEY"]
 GEMINI_API_KEYS = [k for k in [
     os.environ.get("GEMINI_API_KEY"),
     os.environ.get("GEMINI_API_KEY_2"),
@@ -22,72 +23,28 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "it-IT,it;q=0.9",
 }
-BASE_URL = "https://www.sportytrader.it"
+BASE_URL   = "https://www.sportytrader.it"
+IT_TZ      = timezone(timedelta(hours=2))
 
-
-LEAGUE_QUOTE_URLS = [
-    "https://www.sportytrader.it/quote/calcio/mondo/mondiali-1811/",
-    "https://www.sportytrader.it/quote/calcio/europa/champions-league-8/",
-    "https://www.sportytrader.it/quote/calcio/europa/europa-league-481/",
-    "https://www.sportytrader.it/quote/calcio/italia/serie-a-79/",
-    "https://www.sportytrader.it/quote/calcio/inghilterra/premier-league-49/",
-    "https://www.sportytrader.it/quote/calcio/spagna/laliga-108/",
-    "https://www.sportytrader.it/quote/calcio/germania/bundesliga-65/",
-    "https://www.sportytrader.it/quote/calcio/francia/ligue-1-123/",
+SPORTS_ODDS = [
+    "soccer_fifa_world_cup",
+    "soccer_uefa_champs_league",
+    "soccer_uefa_europa_league",
+    "soccer_italy_serie_a",
+    "soccer_epl",
+    "soccer_spain_la_liga",
+    "soccer_germany_bundesliga",
+    "soccer_france_ligue_one",
 ]
 
-def build_orari_map_it(oggi_giorno, oggi_mese):
-    mesi = {"gen":1,"feb":2,"mar":3,"apr":4,"mag":5,"giu":6,"lug":7,"ago":8,"set":9,"ott":10,"nov":11,"dic":12}
-    orari_map = {}
-    for url in LEAGUE_QUOTE_URLS:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            if r.status_code != 200:
-                continue
-            soup = BeautifulSoup(r.text, "html.parser")
-            main = soup.select_one("main")
-            if not main:
-                continue
-            lines = [l.strip() for l in main.get_text(separator="\n").split("\n") if l.strip()]
-            i = 0
-            while i < len(lines):
-                m = re.match(r"^(\d{1,2})\s+(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+-\s+(\d{2}:\d{2})$", lines[i], re.IGNORECASE)
-                if m:
-                    giorno = int(m.group(1))
-                    mese = mesi.get(m.group(2).lower(), 6)
-                    orario_it = m.group(3)
-                    if giorno == oggi_giorno and mese == oggi_mese:
-                        if i+1 < len(lines):
-                            orari_map[lines[i+1]] = orario_it
-                i += 1
-            time.sleep(0.3)
-        except Exception as e:
-            print(f"Errore quote {url}: {e}")
-    print(f"Orari IT trovati: {len(orari_map)}")
-    for k, v in orari_map.items():
-        print(f"  {k} -> {v}")
-    return orari_map
-
-def trova_orario_it(home, away, orari_map):
-    chiave = f"{home} - {away}"
-    if chiave in orari_map:
-        return orari_map[chiave]
-    for k, v in orari_map.items():
-        parti = k.split(" - ")
-        if len(parti) == 2:
-            h = parti[0].lower().strip()
-            a = parti[1].lower().strip()
-            if (h in home.lower() or home.lower() in h) and (a in away.lower() or away.lower() in a):
-                return v
-    return None
-
 def get_now_it():
-    return datetime.now(timezone(timedelta(hours=2)))
+    return datetime.now(IT_TZ)
 
+# ─── GEMINI ──────────────────────────────────────────────────
 def chiedi_gemini(prompt):
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 3000}
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1500}
     }
     for key in GEMINI_API_KEYS:
         for model in GEMINI_MODELS:
@@ -102,361 +59,190 @@ def chiedi_gemini(prompt):
                 continue
     return None
 
-def scrape_lista_pronostici():
-    """Scrapa la pagina principale e trova i link dei pronostici di oggi."""
+# ─── THE ODDS API — orari IT corretti ─────────────────────────
+def fetch_partite_oggi_it():
+    """Fetcha le partite di oggi con orari IT corretti da The Odds API."""
+    oggi_it = get_now_it()
+    partite = []
+    for sport in SPORTS_ODDS:
+        r = requests.get(
+            f"https://api.the-odds-api.com/v4/sports/{sport}/odds/",
+            params={"apiKey": ODDS_API_KEY, "regions": "eu", "markets": "h2h",
+                    "oddsFormat": "decimal", "dateFormat": "iso"},
+            timeout=15
+        )
+        if r.status_code != 200:
+            print(f"  {sport}: HTTP {r.status_code}")
+            continue
+        for g in r.json():
+            ct = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00")).astimezone(IT_TZ)
+            if ct.date() != oggi_it.date():
+                continue
+            if ct.hour < 8:
+                continue
+            odds_1 = odds_x = odds_2 = None
+            for bk in g.get("bookmakers", [])[:1]:
+                for mkt in bk.get("markets", []):
+                    if mkt["key"] == "h2h":
+                        for o in mkt["outcomes"]:
+                            if o["name"] == g["home_team"]: odds_1 = round(o["price"], 2)
+                            elif o["name"] == g["away_team"]: odds_2 = round(o["price"], 2)
+                            else: odds_x = round(o["price"], 2)
+            partite.append({
+                "home": g["home_team"],
+                "away": g["away_team"],
+                "sport": sport,
+                "orario_it": ct.strftime("%H:%M"),
+                "odds_1": odds_1 or "N/D",
+                "odds_x": odds_x or "N/D",
+                "odds_2": odds_2 or "N/D",
+            })
+            print(f"  {ct.strftime('%H:%M')} IT | {g['home_team']} vs {g['away_team']} | 1={odds_1} X={odds_x} 2={odds_2}")
+    partite.sort(key=lambda x: x["orario_it"])
+    return partite
+
+# ─── SPORTYTRADER — pronostici e analisi ─────────────────────
+def normalizza(nome):
+    return (nome.lower()
+        .replace("&", "").replace("-", " ")
+        .replace("herzegovina", "erzegovina")
+        .replace("  ", " ").strip())
+
+def match_squadre(a, b):
+    na, nb = normalizza(a), normalizza(b)
+    if na == nb: return True
+    if na in nb or nb in na: return True
+    if len(na) >= 5 and na[:5] == nb[:5]: return True
+    return False
+
+def scrape_lista_sportytrader():
+    """Scarica la lista dei link pronostici dalla pagina principale."""
     r = requests.get(f"{BASE_URL}/pronostici/calcio/", headers=HEADERS, timeout=15)
     if r.status_code != 200:
-        print(f"Errore fetch lista: {r.status_code}")
-        return []
-
+        return {}
     soup = BeautifulSoup(r.text, "html.parser")
-    today = get_now_it().strftime("%d/%m/%y")
-
-    # Trova tutti i link pronostici (hanno un numero ID alla fine)
-    links = set()
+    links = {}
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        # Link tipo /pronostici/nome-squadra1-nome-squadra2-123456/
         if re.search(r"/pronostici/[a-z0-9-]+-\d{5,}/?$", href):
             full = href if href.startswith("http") else BASE_URL + href
-            links.add(full)
+            # Estrai home-away dal nome slug
+            slug = full.rstrip("/").split("/")[-1]
+            links[slug] = full
+    return links
 
-    print(f"Link pronostici trovati: {len(links)}")
-    return list(links)
-
-def scrape_pronostico(url, oggi_str, orari_map=None):
-    """Scrapa una singola pagina pronostico e restituisce i dati strutturati.
-    oggi_str = data di oggi in formato GG/MM/AA (es. '12/06/26')
-    Filtra solo partite di OGGI tra le 08:00 e le 23:59 IT.
-    """
+def scrape_pronostico_sporty(url):
+    """Scrapa analisi e pronostico da una singola pagina SportyTrader."""
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         if r.status_code != 200:
-            return None
+            return None, None, None, None
         soup = BeautifulSoup(r.text, "html.parser")
         main = soup.select_one("main")
         if not main:
-            return None
+            return None, None, None, None
 
         lines = [l.strip() for l in main.get_text(separator="\n").split("\n") if l.strip()]
 
-        # Estrai dati strutturati
-        home = away = orario = data_partita = competizione = pronostico_tip = analisi = ""
-        odds_1 = odds_x = odds_2 = "N/D"
-
-        # Cerca data, orario e squadre (nelle prime righe)
+        # Estrai home/away
+        home = away = tip = ""
         for i, line in enumerate(lines[:15]):
             if re.match(r"^\d{2}/\d{2}/\d{2}$", line):
-                data_partita = line  # es. "12/06/26" — già in orario IT
-                # Orario è la riga successiva
-                if i + 1 < len(lines) and re.match(r"^\d{2}:\d{2}$", lines[i+1]):
-                    orario = lines[i+1]
-                # Home è la riga precedente, Away è 2 righe dopo
-                if i > 0:
-                    home = lines[i-1]
-                if i + 2 < len(lines):
-                    away = lines[i+2]
-            if any(k in line for k in ["Mondiali", "Serie A", "Champions", "Premier", "Europa", "Liga", "Bundesliga", "Ligue", "Conference"]):
-                competizione = line.replace("Pronostico ", "").replace("Mondo - ", "")
+                if i > 0: home = lines[i-1]
+                if i+2 < len(lines): away = lines[i+2]
+            if "Il pronostico:" in line and i+1 < len(lines):
+                tip = lines[i+1]
 
-        # FILTRO 1: solo partite di OGGI
-        if data_partita != oggi_str:
-            print(f"    ⏭ Skip {home} vs {away} — data {data_partita} (oggi={oggi_str})")
-            return None
-
-                # Sostituisci orario con quello IT dalla mappa quote
-        if orari_map:
-            orario_it = trova_orario_it(home, away, orari_map)
-            if orario_it:
-                print(f"    Orario IT: {orario_it} (era: {orario})")
-                orario = orario_it
-
-        # FILTRO 2: solo partite dalle 08:00 alle 23:59 IT
-        if orario:
-            try:
-                ora_h = int(orario.split(":")[0])
-                if ora_h < 8:
-                    print(f"    Skip {home} vs {away} - orario IT {orario} (prima delle 08:00)")
-                    return None
-            except:
-                pass
-port re
-from bs4 import BeautifulSoup
-from datetime import datetime, timezone, timedelta
-
-# ─── CONFIG ──────────────────────────────────────────────────
-BOT_TOKEN       = os.environ["BOT_TOKEN"]
-CHAT_ID         = os.environ["CHAT_ID"]
-GEMINI_API_KEYS = [k for k in [
-    os.environ.get("GEMINI_API_KEY"),
-    os.environ.get("GEMINI_API_KEY_2"),
-    os.environ.get("GEMINI_API_KEY_3"),
-] if k]
-GEMINI_MODELS = [
-    "gemini-2.0-flash", "gemini-2.0-flash-lite",
-    "gemini-2.5-flash", "gemini-flash-latest",
-]
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "it-IT,it;q=0.9",
-}
-BASE_URL = "https://www.sportytrader.it"
-
-
-LEAGUE_QUOTE_URLS = [
-    "https://www.sportytrader.it/quote/calcio/mondo/mondiali-1811/",
-    "https://www.sportytrader.it/quote/calcio/europa/champions-league-8/",
-    "https://www.sportytrader.it/quote/calcio/europa/europa-league-481/",
-    "https://www.sportytrader.it/quote/calcio/italia/serie-a-79/",
-    "https://www.sportytrader.it/quote/calcio/inghilterra/premier-league-49/",
-    "https://www.sportytrader.it/quote/calcio/spagna/laliga-108/",
-    "https://www.sportytrader.it/quote/calcio/germania/bundesliga-65/",
-    "https://www.sportytrader.it/quote/calcio/francia/ligue-1-123/",
-]
-
-def build_orari_map_it(oggi_giorno, oggi_mese):
-    mesi = {"gen":1,"feb":2,"mar":3,"apr":4,"mag":5,"giu":6,"lug":7,"ago":8,"set":9,"ott":10,"nov":11,"dic":12}
-    orari_map = {}
-    for url in LEAGUE_QUOTE_URLS:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            if r.status_code != 200:
-                continue
-            soup = BeautifulSoup(r.text, "html.parser")
-            main = soup.select_one("main")
-            if not main:
-                continue
-            lines = [l.strip() for l in main.get_text(separator="\n").split("\n") if l.strip()]
-            i = 0
-            while i < len(lines):
-                m = re.match(r"^(\d{1,2})\s+(gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+-\s+(\d{2}:\d{2})$", lines[i], re.IGNORECASE)
-                if m:
-                    giorno = int(m.group(1))
-                    mese = mesi.get(m.group(2).lower(), 6)
-                    orario_it = m.group(3)
-                    if giorno == oggi_giorno and mese == oggi_mese:
-                        if i+1 < len(lines):
-                            orari_map[lines[i+1]] = orario_it
-                i += 1
-            time.sleep(0.3)
-        except Exception as e:
-            print(f"Errore quote {url}: {e}")
-    print(f"Orari IT trovati: {len(orari_map)}")
-    for k, v in orari_map.items():
-        print(f"  {k} -> {v}")
-    return orari_map
-
-def trova_orario_it(home, away, orari_map):
-    chiave = f"{home} - {away}"
-    if chiave in orari_map:
-        return orari_map[chiave]
-    for k, v in orari_map.items():
-        parti = k.split(" - ")
-        if len(parti) == 2:
-            h = parti[0].lower().strip()
-            a = parti[1].lower().strip()
-            if (h in home.lower() or home.lower() in h) and (a in away.lower() or away.lower() in a):
-                return v
-    return None
-
-def get_now_it():
-    return datetime.now(timezone(timedelta(hours=2)))
-
-def chiedi_gemini(prompt):
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 3000}
-    }
-    for key in GEMINI_API_KEYS:
-        for model in GEMINI_MODELS:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-            try:
-                r = requests.post(url, json=body, timeout=60)
-                if r.status_code == 200:
-                    return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                elif r.status_code == 429:
-                    continue
-            except:
-                continue
-    return None
-
-def scrape_lista_pronostici():
-    """Scrapa la pagina principale e trova i link dei pronostici di oggi."""
-    r = requests.get(f"{BASE_URL}/pronostici/calcio/", headers=HEADERS, timeout=15)
-    if r.status_code != 200:
-        print(f"Errore fetch lista: {r.status_code}")
-        return []
-
-    soup = BeautifulSoup(r.text, "html.parser")
-    today = get_now_it().strftime("%d/%m/%y")
-
-    # Trova tutti i link pronostici (hanno un numero ID alla fine)
-    links = set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        # Link tipo /pronostici/nome-squadra1-nome-squadra2-123456/
-        if re.search(r"/pronostici/[a-z0-9-]+-\d{5,}/?$", href):
-            full = href if href.startswith("http") else BASE_URL + href
-            links.add(full)
-
-    print(f"Link pronostici trovati: {len(links)}")
-    return list(links)
-
-def scrape_pronostico(url, oggi_str, orari_map=None):
-    """Scrapa una singola pagina pronostico e restituisce i dati strutturati.
-    oggi_str = data di oggi in formato GG/MM/AA (es. '12/06/26')
-    Filtra solo partite di OGGI tra le 08:00 e le 23:59 IT.
-    """
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        if r.status_code != 200:
-            return None
-        soup = BeautifulSoup(r.text, "html.parser")
-        main = soup.select_one("main")
-        if not main:
-            return None
-
-        lines = [l.strip() for l in main.get_text(separator="\n").split("\n") if l.strip()]
-
-        # Estrai dati strutturati
-        home = away = orario = data_partita = competizione = pronostico_tip = analisi = ""
-        odds_1 = odds_x = odds_2 = "N/D"
-
-        # Cerca data, orario e squadre (nelle prime righe)
-        for i, line in enumerate(lines[:15]):
-            if re.match(r"^\d{2}/\d{2}/\d{2}$", line):
-                data_partita = line  # es. "12/06/26" — già in orario IT
-                # Orario è la riga successiva
-                if i + 1 < len(lines) and re.match(r"^\d{2}:\d{2}$", lines[i+1]):
-                    orario = lines[i+1]
-                # Home è la riga precedente, Away è 2 righe dopo
-                if i > 0:
-                    home = lines[i-1]
-                if i + 2 < len(lines):
-                    away = lines[i+2]
-            if any(k in line for k in ["Mondiali", "Serie A", "Champions", "Premier", "Europa", "Liga", "Bundesliga", "Ligue", "Conference"]):
-                competizione = line.replace("Pronostico ", "").replace("Mondo - ", "")
-
-        # FILTRO 1: solo partite di OGGI
-        if data_partita != oggi_str:
-            print(f"    ⏭ Skip {home} vs {away} — data {data_partita} (oggi={oggi_str})")
-            return None
-
-        # FILTRO 2: solo partite dalle 08:00 alle 23:59 IT
-        if orario:
-            ora_h = int(orario.split(":")[0])
-            if ora_h < 8:
-                print(f"    ⏭ Skip {home} vs {away} — orario {orario} (prima delle 08:00)")
-                return None
-
-        # Cerca il pronostico (riga dopo "Il pronostico:")
-        for i, line in enumerate(lines):
-            if "Il pronostico:" in line and i + 1 < len(lines):
-                pronostico_tip = lines[i+1]
-                break
-
-        # Analisi testuale (righe lunghe dopo "Pronostico [Competizione]")
+        # Analisi testuale
         analisi_lines = []
         capture = False
         for line in lines:
             if capture:
-                if len(line) > 60 and not any(x in line for x in ["Bookmaker", "Bonus", "Offerta", "quote", "Quote", "Vedere tutte", "scommettere"]):
+                if len(line) > 60 and not any(x in line for x in ["Bookmaker","Bonus","Offerta","quote","Quote","Vedere","scommettere","Riservato","Pubblicato"]):
                     analisi_lines.append(line)
                 if len(analisi_lines) >= 4:
                     break
-            if line.startswith("Pronostico ") and any(x in line for x in ["Mondiali", "Serie A", "Champions", "Premier", "Europa", "Liga", "Bundesliga", "Ligue"]):
+            if line.startswith("Pronostico ") and len(line) > 15:
                 capture = True
+
         analisi = " ".join(analisi_lines)
+        return home, away, tip, analisi
+    except:
+        return None, None, None, None
 
-        # Quote: pattern "1 X 2" poi righe con numeri
-        quote_section = False
-        quote_rows = []
-        for i, line in enumerate(lines):
-            if line == "1" and i+1 < len(lines) and lines[i+1] == "X":
-                quote_section = True
+def abbina_pronostici(partite_odds, links_sporty):
+    """Abbina ogni partita Odds API con il pronostico SportyTrader."""
+    risultati = []
+    slugs = list(links_sporty.items())
+
+    for p in partite_odds:
+        trovato = False
+        for slug, url in slugs:
+            # Prova a leggere la pagina
+            home_s, away_s, tip, analisi = scrape_pronostico_sporty(url)
+            if not home_s:
                 continue
-            if quote_section and re.match(r"^\d\.\d+$", line):
-                quote_rows.append(line)
-            if len(quote_rows) >= 3:
+            if match_squadre(p["home"], home_s) and match_squadre(p["away"], away_s):
+                print(f"  MATCH: {p['home']} vs {p['away']} -> {url.split('/')[-2]}")
+                risultati.append({**p, "tip": tip, "analisi": analisi, "url": url})
+                trovato = True
                 break
+            time.sleep(0.2)
 
-        if len(quote_rows) >= 3:
-            odds_1, odds_x, odds_2 = quote_rows[0], quote_rows[1], quote_rows[2]
+        if not trovato:
+            print(f"  No pronostico SportyTrader per: {p['home']} vs {p['away']}")
+            risultati.append({**p, "tip": "", "analisi": "", "url": ""})
 
-        # Fallback: usa il selettore CSS per le quote
-        if odds_1 == "N/D":
-            quote_els = main.select(".pastille--cotes")
-            vals = [el.get_text(strip=True) for el in quote_els if re.match(r"^\d\.\d+$", el.get_text(strip=True))]
-            if len(vals) >= 3:
-                odds_1, odds_x, odds_2 = vals[0], vals[1], vals[2]
+    return risultati
 
-        if not home or not away:
-            return None
-
-        return {
-            "url": url,
-            "home": home,
-            "away": away,
-            "orario": orario,
-            "competizione": competizione or "Calcio",
-            "pronostico_tip": pronostico_tip,
-            "analisi": analisi,
-            "odds_1": odds_1,
-            "odds_x": odds_x,
-            "odds_2": odds_2,
-        }
-    except Exception as e:
-        print(f"Errore scraping {url}: {e}")
-        return None
-
-def genera_messaggio_partita(p, now_it):
-    """Gemini genera l'analisi per UNA singola partita."""
+# ─── GEMINI — genera messaggi ────────────────────────────────
+def genera_messaggio_partita(p):
     q1 = f"@{p['odds_1']}" if p['odds_1'] != "N/D" else ""
     prompt = f"""Sei un analista calcistico professionista italiano per il canale Telegram SuperPronostico.
 
-Partita: {p['home']} vs {p['away']} | {p['competizione']} | ore {p['orario']}
-Pronostico esperti: {p['pronostico_tip']}
+Partita: {p['home']} vs {p['away']} | ore {p['orario_it']} IT
+Pronostico esperti SportyTrader: {p['tip'] or 'N/D'}
 Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}
 Analisi disponibile: {p['analisi'][:400] if p['analisi'] else 'N/D'}
 
-Scrivi UN messaggio Telegram per questa partita:
-- Prima riga: *{p['home']} vs {p['away']}* ore {p['orario']} — _{p['competizione']}_
-- 3-4 righe di analisi professionale e coinvolgente
-- *🎯 Pronostico: [{p['pronostico_tip']}]* con quota se disponibile
-- Riga quote: 1={p['odds_1']} ❌ X={p['odds_x']} ❌ 2={p['odds_2']}
+Scrivi UN messaggio Telegram (max 600 caratteri):
+- Prima riga: *{p['home']} vs {p['away']}* ore {p['orario_it']} — _Mondiali_
+- 2-3 righe analisi professionale e coinvolgente
+- *Pronostico: {p['tip'] or 'da definire'}* {q1}
+- Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}
 
-Regole: *grassetto*, _corsivo_, emoji, max 600 caratteri, solo italiano, solo il testo."""
+Regole: *grassetto*, _corsivo_, emoji ⚽🔥🎯, solo italiano, solo il testo."""
     return chiedi_gemini(prompt)
 
-def genera_post_telegram(pronostici, now_it):
-    """Genera lista di messaggi: intestazione + uno per partita + chiusura."""
+def genera_tutti_messaggi(partite, now_it):
     messaggi = []
-
-    # Messaggio 1: intestazione
     data_it = now_it.strftime('%A %d %B %Y').capitalize()
-    intestazione = f"🔥 *LE ANALISI DI OGGI — {data_it}* 🔥\n\n⚽ {len(pronostici)} partite analizzate dai nostri esperti\n📊 Pronostici, quote e consigli per ogni match\n\nSeguici per non perdere nessuna analisi! 👇"
-    messaggi.append(intestazione)
 
-    # Un messaggio per ogni partita
-    for i, p in enumerate(pronostici, 1):
-        print(f"  Gemini analisi {i}/{len(pronostici)}: {p['home']} vs {p['away']}...")
-        testo = genera_messaggio_partita(p, now_it)
+    # Intestazione
+    messaggi.append(
+        f"🔥 *LE ANALISI DI OGGI — {data_it}* 🔥\n\n"
+        f"⚽ {len(partite)} partite analizzate\n"
+        f"📊 Pronostici e quote in tempo reale\n\n"
+        f"Seguici per non perdere nessuna analisi! 👇"
+    )
+
+    for i, p in enumerate(partite, 1):
+        print(f"  Gemini analisi {i}/{len(partite)}: {p['home']} vs {p['away']}...")
+        testo = genera_messaggio_partita(p)
         if testo:
             messaggi.append(testo)
         else:
-            # Fallback senza Gemini
-            fallback = f"*{p['home']} vs {p['away']}* ore {p['orario']} — _{p['competizione']}_\n\n🎯 *Pronostico: {p['pronostico_tip']}*\n\nQuote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}"
-            messaggi.append(fallback)
+            messaggi.append(
+                f"*{p['home']} vs {p['away']}* ore {p['orario_it']}\n"
+                f"🎯 *Pronostico: {p['tip'] or 'N/D'}*\n"
+                f"Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}"
+            )
 
-    # Messaggio finale: chiusura
-    chiusura = "——————\n🔔 *Attiva le notifiche* per non perdere le prossime analisi!\n\n⚠️ Solo per maggiorenni — gioca responsabilmente. Le analisi sono a scopo informativo."
-    messaggi.append(chiusura)
-
+    messaggi.append("——————\n🔔 *Attiva le notifiche* per non perdere le analisi!\n⚠️ Solo per maggiorenni — gioca responsabilmente.")
     return messaggi
 
+# ─── TELEGRAM ────────────────────────────────────────────────
 def invia_messaggio(testo):
-    """Invia un singolo messaggio Telegram."""
     if len(testo) > 4096:
         testo = testo[:4090] + "..."
     r = requests.post(
@@ -466,7 +252,6 @@ def invia_messaggio(testo):
     result = r.json()
     if result.get("ok"):
         return result["result"]["message_id"]
-    # Fallback senza markdown
     r2 = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         json={"chat_id": CHAT_ID, "text": testo}
@@ -474,66 +259,43 @@ def invia_messaggio(testo):
     return r2.json().get("result", {}).get("message_id")
 
 def pubblica_telegram(messaggi):
-    """Pubblica una lista di messaggi su Telegram con pausa tra uno e l'altro."""
     ids = []
     for i, testo in enumerate(messaggi):
         msg_id = invia_messaggio(testo)
         if msg_id:
-            print(f"  ✅ Messaggio {i+1}/{len(messaggi)} — id: {msg_id}")
+            print(f"  Messaggio {i+1}/{len(messaggi)} OK — id: {msg_id}")
             ids.append(msg_id)
-        else:
-            print(f"  ❌ Messaggio {i+1} fallito")
-        time.sleep(1)  # pausa 1s tra messaggi
+        time.sleep(1)
     return ids
 
+# ─── MAIN ────────────────────────────────────────────────────
 if __name__ == "__main__":
     now = get_now_it()
-    print(f"=== PRONOSTICI SPORTYTRADER — {now.strftime('%d/%m/%Y %H:%M')} ===")
+    print(f"=== PRONOSTICI ARTICOLO — {now.strftime('%d/%m/%Y %H:%M')} IT ===")
 
-    # Step 1: lista link
+    # Step 1: orari IT corretti da The Odds API
+    print("\nFetch partite di oggi da The Odds API (orari IT)...")
+    partite = fetch_partite_oggi_it()
+    print(f"Partite trovate oggi dalle 08:00 IT: {len(partite)}")
+
+    if not partite:
+        print("Nessuna partita oggi. Stop.")
+        exit(0)
+
+    # Step 2: pronostici e analisi da SportyTrader
     print("\nScraping lista pronostici SportyTrader...")
-    urls = scrape_lista_pronostici()
+    links = scrape_lista_sportytrader()
+    print(f"Link trovati: {len(links)}")
 
-    if not urls:
-        print("Nessun pronostico trovato. Stop.")
-        exit(0)
+    print("\nAbbinamento partite con pronostici...")
+    partite = abbina_pronostici(partite[:8], links)
 
-    # Step 2: scrapa ogni pagina
-    print(f"\nScraping {len(urls)} pagine pronostici...")
-    pronostici = []
-    oggi_str = now.strftime("%d/%m/%y")  # es. "12/06/26"
-    oggi_giorno = now.day
-    oggi_mese = now.month
-    print(f"Filtro partite per oggi: {oggi_str} dalle 08:00 alle 23:59 IT")
+    # Step 3: genera messaggi con Gemini
+    print("\nGenerazione messaggi con Gemini...")
+    messaggi = genera_tutti_messaggi(partite, now)
+    print(f"Messaggi generati: {len(messaggi)}")
 
-    # Costruisce mappa orari IT leggendo le pagine quote di SportyTrader
-    print("\nLettura orari IT da SportyTrader...")
-    orari_map = build_orari_map_it(oggi_giorno, oggi_mese)
-
-    for url in urls:  # scorriamo tutti, filtro interno
-        print(f"  {url.split('/')[-2]}")
-        dati = scrape_pronostico(url, oggi_str, orari_map)
-        if dati:
-            pronostici.append(dati)
-            print(f"    ✅ {dati['home']} vs {dati['away']} | tip: {dati['pronostico_tip']} | 1={dati['odds_1']} X={dati['odds_x']} 2={dati['odds_2']}")
-        time.sleep(0.5)
-
-    print(f"\nPronostici raccolti: {len(pronostici)}")
-
-    # Limita a max 8 partite per non fare il post troppo lungo
-    pronostici = pronostici[:8]
-
-    if not pronostici:
-        print("Nessun pronostico valido per oggi. Stop.")
-        exit(0)
-
-    # Step 3: genera post con Gemini
-    messaggi = genera_post_telegram(pronostici, now)
-    print(f"\nMessaggi generati: {len(messaggi)}")
-
-    # Step 4: pubblica
-    print("\nPubblicazione Telegram...")
+    # Step 4: pubblica su Telegram
+    print("\nPubblicazione su Telegram...")
     ids = pubblica_telegram(messaggi)
-    print(f"Pubblicati {len(ids)} messaggi su Telegram.")
-
-    print("\n=== DONE ===")
+    print(f"\n=== DONE — {len(ids)} messaggi pubblicati ===")
