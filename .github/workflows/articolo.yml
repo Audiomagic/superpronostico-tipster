@@ -1,0 +1,24 @@
+name: Pronostici Articolo
+
+on:
+  schedule:
+    - cron: '30 7 * * *'   # 09:30 IT (UTC+2)
+  workflow_dispatch:
+
+jobs:
+  pronostici-articolo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python pronostici_articolo.py
+        env:
+          BOT_TOKEN:        ${{ secrets.BOT_TOKEN }}
+          CHAT_ID:          ${{ secrets.CHAT_ID }}
+          ODDS_API_KEY:     ${{ secrets.ODDS_API_KEY }}
+          GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
