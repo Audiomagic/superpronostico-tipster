@@ -4,8 +4,7 @@ on:
   schedule:
     - cron: '0 10 * * *'    # 12:00 IT (UTC+2) — schedina mattina
     - cron: '0 15 * * *'    # 17:00 IT (UTC+2) — schedina sera
-    - cron: '30 21 * * *'   # 23:30 IT (UTC+2) — controlla risultati notte
-    - cron: '0 6 * * *'     # 08:00 IT (UTC+2) — controlla risultati mattino
+    - cron: '0 * * * *'     # ogni ora — controlla risultati (logica dinamica interna)
     - cron: '30 7 * * *'   # 09:30 IT (UTC+2) — pronostici articolo
   workflow_dispatch:
     inputs:
@@ -71,7 +70,7 @@ jobs:
 
   controlla-risultati:
     if: |
-      (github.event_name == 'schedule' && (github.event.schedule == '30 21 * * *' || github.event.schedule == '0 6 * * *')) ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 * * * *') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'risultati')
     runs-on: ubuntu-latest
     steps:
