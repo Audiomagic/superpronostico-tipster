@@ -1,0 +1,28 @@
+name: Controlla Risultati
+
+on:
+  schedule:
+    - cron: '0 * * * *'    # ogni ora
+  workflow_dispatch:
+
+jobs:
+  controlla-risultati:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python controlla_risultati.py
+        env:
+          ODDS_API_KEY:     ${{ secrets.ODDS_API_KEY }}
+          BOT_TOKEN:        ${{ secrets.BOT_TOKEN }}
+          CHAT_ID:          ${{ secrets.CHAT_ID }}
+          GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          GEMINI_API_KEY_4: ${{ secrets.GEMINI_API_KEY_4 }}
+          GEMINI_API_KEY_5: ${{ secrets.GEMINI_API_KEY_5 }}
+          SHEET_ID:         ${{ secrets.SHEET_ID }}
+          GOOGLE_CREDS:     ${{ secrets.GOOGLE_CREDS }}
