@@ -62,7 +62,11 @@ def chiedi_gemini(prompt):
 # ─── THE ODDS API — orari IT corretti ─────────────────────────
 def fetch_partite_oggi_it():
     """Fetcha le partite di oggi con orari IT corretti da The Odds API."""
-    oggi_it = get_now_it()
+    now_it = get_now_it()
+    # Finestra: dalle 08:00 di oggi fino alle 08:00 di domani (24h)
+    inizio = now_it.replace(hour=8, minute=0, second=0, microsecond=0)
+    fine   = inizio + timedelta(hours=24)
+    print(f"Finestra partite: {inizio.strftime('%d/%m %H:%M')} → {fine.strftime('%d/%m %H:%M')} IT")
     partite = []
     for sport in SPORTS_ODDS:
         r = requests.get(
@@ -76,9 +80,7 @@ def fetch_partite_oggi_it():
             continue
         for g in r.json():
             ct = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00")).astimezone(IT_TZ)
-            if ct.date() != oggi_it.date():
-                continue
-            if ct.hour < 8:
+            if not (inizio <= ct < fine):
                 continue
             odds_1 = odds_x = odds_2 = None
             for bk in g.get("bookmakers", [])[:1]:
