@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       fascia:
-        description: 'Fascia da pubblicare'
+        description: 'Fascia da pubblicare (mattina o sera)'
         required: true
         default: 'mattina'
         type: choice
