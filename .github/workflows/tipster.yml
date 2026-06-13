@@ -1,9 +1,10 @@
 name: SuperPronostico Tipster
 
 on:
-  schedule:
-    - cron: '0 10 * * *'    # 12:00 IT (UTC+2) — schedina mattina
-    - cron: '0 15 * * *'    # 17:00 IT (UTC+2) — schedina sera
+  # PAUSA — decommentare per riattivare
+  # schedule:
+  #   - cron: '0 10 * * *'    # 12:00 IT (UTC+2) — schedina mattina
+  #   - cron: '0 15 * * *'    # 17:00 IT (UTC+2) — schedina sera
   workflow_dispatch:
     inputs:
       fascia:
