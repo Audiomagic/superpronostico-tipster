@@ -1,4 +1,5 @@
 import requests
+import hashlib
 import os
 import time
 import re
@@ -82,7 +83,7 @@ def chiedi_ai(prompt):
         if result:
             return result
         print("Groq fallito — fallback su Gemini")
-    return chiedi_ai(prompt)
+    return chiedi_gemini(prompt)
 
 
 def chiedi_gemini(prompt):
@@ -242,22 +243,107 @@ def abbina_pronostici(partite_odds, links_sporty):
     return risultati
 
 # ─── GEMINI — genera messaggi ────────────────────────────────
+# ── 8 stili di analisi per variare i messaggi ────────────────
+STILI_ANALISI = [
+    {
+        "nome": "tattico",
+        "istruzione": (
+            "Analizza la partita dal punto di vista TATTICO: schemi di gioco, "
+            "equilibrio difesa vs attacco, pressing alto, transizioni veloci. "
+            "Concludi con il tuo pronostico motivato tatticamente."
+        ),
+    },
+    {
+        "nome": "forma_recente",
+        "istruzione": (
+            "Concentrati sulla FORMA RECENTE: ultimi 5 risultati di entrambe le squadre, "
+            "trend gol, striscia positiva o negativa, eventuale stanchezza da impegni ravvicinati. "
+            "Pronostico basato sul momento attuale."
+        ),
+    },
+    {
+        "nome": "testa_a_testa",
+        "istruzione": (
+            "Parla dei PRECEDENTI storici tra le due squadre: chi domina nei testa a testa, "
+            "tendenze (molti gol? equilibrio?), fattore campo. "
+            "Pronostico ispirato alla storia tra le due squadre."
+        ),
+    },
+    {
+        "nome": "motivazionale",
+        "istruzione": (
+            "Analizza le MOTIVAZIONI in campo: chi ha più da perdere, situazione in classifica, "
+            "obiettivi stagionali, pressione psicologica, spinta del pubblico di casa. "
+            "Pronostico basato sull'intensità motivazionale."
+        ),
+    },
+    {
+        "nome": "statistico",
+        "istruzione": (
+            "Approccio STATISTICO: media gol segnati e subiti, rendimento casalingo vs trasferta, "
+            "efficacia su palle inattive, clean sheet recenti. "
+            "Pronostico supportato dai numeri."
+        ),
+    },
+    {
+        "nome": "narrativo",
+        "istruzione": (
+            "Racconta questa partita come una STORIA: il contesto della sfida, "
+            "cosa rende questo match interessante, l'atmosfera attesa. "
+            "Coinvolgi il lettore e concludi con il pronostico."
+        ),
+    },
+    {
+        "nome": "uomo_chiave",
+        "istruzione": (
+            "Identifica l'UOMO CHIAVE di ciascuna squadra: il giocatore più pericoloso, "
+            "chi può fare la differenza, chi va tenuto d'occhio. "
+            "Costruisci il pronostico attorno all'impatto di questi giocatori."
+        ),
+    },
+    {
+        "nome": "situazionale",
+        "istruzione": (
+            "Analizza i FATTORI SITUAZIONALI: turno di coppa o campionato, "
+            "possibile turnover, trasferta lunga, assenze importanti, meteo. "
+            "Pronostico tenendo conto di questi elementi extra-campo."
+        ),
+    },
+]
+
+
+def scegli_stile(home, away, orario):
+    """Stile deterministico ma variato: stessa partita → stesso stile, partite diverse → stili diversi."""
+    seed = f"{home}{away}{orario}"
+    idx = int(hashlib.md5(seed.encode()).hexdigest(), 16) % len(STILI_ANALISI)
+    return STILI_ANALISI[idx]
+
+
 def genera_messaggio_partita(p):
-    q1 = f"@{p['odds_1']}" if p['odds_1'] != "N/D" else ""
+    stile = scegli_stile(p["home"], p["away"], p["orario_it"])
+    print(f"    Stile: {stile['nome']}")
+
     prompt = f"""Sei un analista calcistico professionista italiano per il canale Telegram SuperPronostico.
 
-Partita: {p['home']} vs {p['away']} | ore {p['orario_it']} IT
-Pronostico esperti SportyTrader: {p['tip'] or 'N/D'}
-Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}
-Analisi disponibile: {p['analisi'][:400] if p['analisi'] else 'N/D'}
+Partita: {p["home"]} vs {p["away"]} | ore {p["orario_it"]} IT
+Competizione: {p.get("competition", "Calcio Internazionale")}
+Pronostico esperti SportyTrader: {p["tip"] or "N/D"}
+Analisi disponibile: {p["analisi"][:500] if p["analisi"] else "N/D"}
 
-Scrivi UN messaggio Telegram (max 600 caratteri):
-- Prima riga: *{p['home']} vs {p['away']}* ore {p['orario_it']} — _Mondiali_
-- 2-3 righe analisi professionale e coinvolgente
-- *Pronostico: {p['tip'] or 'da definire'}* {q1}
-- Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}
+STILE RICHIESTO — {stile["nome"].upper()}:
+{stile["istruzione"]}
 
-Regole: *grassetto*, _corsivo_, emoji ⚽🔥🎯, solo italiano, solo il testo."""
+Scrivi UN messaggio Telegram (max 580 caratteri):
+- Prima riga: *{p["home"]} vs {p["away"]}* | ore {p["orario_it"]} ⚽
+- 2-3 righe di analisi nello stile indicato, professionale e coinvolgente
+- Ultima riga: 🎯 *Pronostico: {p["tip"] or "da valutare"}*
+
+REGOLE:
+- Usa *grassetto* e _corsivo_ per enfatizzare
+- Emoji pertinenti ma non esagerati
+- Solo italiano
+- NON includere le quote numeriche nel testo
+- Restituisci solo il testo finale, nessun commento aggiuntivo."""
     return chiedi_ai(prompt)
 
 def genera_tutti_messaggi(partite, now_it):
@@ -268,7 +354,7 @@ def genera_tutti_messaggi(partite, now_it):
     messaggi.append(
         f"🔥 *LE ANALISI DI OGGI — {data_it}* 🔥\n\n"
         f"⚽ {len(partite)} partite analizzate\n"
-        f"📊 Pronostici e quote in tempo reale\n\n"
+        f"📊 Analisi tattiche, statistiche e pronostici\n\n"
         f"Seguici per non perdere nessuna analisi! 👇"
     )
 
@@ -281,7 +367,6 @@ def genera_tutti_messaggi(partite, now_it):
             messaggi.append(
                 f"*{p['home']} vs {p['away']}* ore {p['orario_it']}\n"
                 f"🎯 *Pronostico: {p['tip'] or 'N/D'}*\n"
-                f"Quote: 1={p['odds_1']} X={p['odds_x']} 2={p['odds_2']}"
             )
 
     messaggi.append("——————\n🔔 *Attiva le notifiche* per non perdere le analisi!\n⚠️ Solo per maggiorenni — gioca responsabilmente.")
